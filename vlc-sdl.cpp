@@ -10,26 +10,32 @@
 
 #include "SDL.h"
 #include "SDL_mutex.h"
+#include "SDL_opengl.h"
 
 #include "vlc/vlc.h"
 
-#define WIDTH 640
+#define WIDTH 720
 #define HEIGHT 480
 
-#define VIDEOWIDTH 320
-#define VIDEOHEIGHT 240
+#define VIDEOWIDTH 640
+#define VIDEOHEIGHT 360
 
-struct context {
+struct Context {
     SDL_Renderer* renderer;
     SDL_Texture* texture;
     SDL_mutex* mutex;
     int n;
 };
 
+struct Context context;
+
+SDL_Window* window;
+
+
 // VLC prepares to render a video frame.
 static void* lock(void* data, void** p_pixels) {
 
-    struct context* c = (context*)data;
+    struct Context* c = (Context*)data;
 
     int pitch;
     SDL_LockMutex(c->mutex);
@@ -41,7 +47,7 @@ static void* lock(void* data, void** p_pixels) {
 // VLC just rendered a video frame.
 static void unlock(void* data, void* id, void* const* p_pixels) {
 
-    struct context* c = (context*)data;
+    struct Context* c = (Context*)data;
 
     uint16_t* pixels = (uint16_t*)*p_pixels;
 
@@ -66,19 +72,20 @@ static void unlock(void* data, void* id, void* const* p_pixels) {
 // VLC wants to display a video frame.
 static void display(void* data, void* id) {
 
-    struct context* c = (context*)data;
+    struct Context* c = (Context*)data;
 
     SDL_Texture* texture;
-    texture = SDL_CreateTexture(c->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, VIDEOWIDTH, VIDEOHEIGHT);
-
+    //texture = SDL_CreateTexture(c->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, VIDEOWIDTH, VIDEOHEIGHT);
+    int width, height;
+    SDL_GetWindowSize(window, &width, &height);
 
     SDL_Rect rect;
-    rect.w = VIDEOWIDTH;
-    rect.h = VIDEOHEIGHT;
-    rect.x = (int)((1. + .5 * sin(0.03 * c->n)) * (WIDTH - VIDEOWIDTH) / 2);
-    rect.y = (int)((1. + .5 * cos(0.03 * c->n)) * (HEIGHT - VIDEOHEIGHT) / 2);
-    /*rect.x = 0;
-    rect.y = 0;*/
+    rect.w = width;
+    rect.h = height;
+    /*rect.x = (int)((1. + .5 * sin(0.03 * c->n)) * (WIDTH - VIDEOWIDTH) / 2);
+    rect.y = (int)((1. + .5 * cos(0.03 * c->n)) * (HEIGHT - VIDEOHEIGHT) / 2);*/
+    rect.x = 0;
+    rect.y = 0;
 
     SDL_SetRenderDrawColor(c->renderer, 0, 80, 0, 255);
     SDL_RenderClear(c->renderer);
@@ -92,7 +99,6 @@ static void display(void* data, void* id) {
     //SDL_RenderFillRect(c->renderer, &rect);
     //SDL_SetRenderTarget(c->renderer, NULL);
     //SDL_RenderCopy(c->renderer, texture, NULL, &rect);
-
 
     SDL_RenderPresent(c->renderer);
 }
@@ -111,6 +117,51 @@ static int TestThread(void* ptr) {
     }
 
     return cnt;
+}
+
+auto paint = [&]() {
+    SDL_Surface* surf = SDL_GetWindowSurface(window);
+    int w, h;
+    SDL_GetWindowSize(window, &w, &h);
+    SDL_Rect rect = { 0, 0, w, h };
+    SDL_FillRect(surf, &rect, 0xff0000ff);
+    SDL_UpdateWindowSurface(window);
+};
+
+void resizeWindow(int windowWidth, int windowHeight) {
+    SDL_Log("MESSAGE: Window width, height ... %d, %d\n", windowWidth, windowHeight);
+    //SDL_SetWindowSize(m_window, windowWidth, windowHeight); // -> auto
+    SDL_Surface* surf = SDL_GetWindowSurface(window);
+    int w, h;
+    SDL_GetWindowSize(window, &w, &h);
+    SDL_Rect rect = { 0, 0, w, h };
+    SDL_FillRect(surf, &rect, 0xff0000ff);
+    
+
+    SDL_LockMutex(context.mutex);
+    SDL_DestroyRenderer(context.renderer);
+    SDL_DestroyTexture(context.texture);
+    context.renderer = NULL;
+    context.texture = NULL;
+
+    context.renderer = SDL_CreateRenderer(window, -1, 0);
+    if (!context.renderer) {
+        fprintf(stderr, "Couldn't create renderer: %s\n", SDL_GetError());
+        quit(4);
+    }
+
+    context.texture = SDL_CreateTexture(
+        context.renderer,
+        SDL_PIXELFORMAT_BGR565, SDL_TEXTUREACCESS_STREAMING,
+        VIDEOWIDTH, VIDEOHEIGHT);
+    if (!context.texture) {
+        fprintf(stderr, "Couldn't create texture: %s\n", SDL_GetError());
+        quit(5);
+    }
+    SDL_UnlockMutex(context.mutex);
+
+    SDL_UpdateWindowSurface(window);
+    //glViewport(0, 0, windowWidth, windowHeight);
 }
 
 int main(int argc, char* argv[]) {
@@ -134,8 +185,6 @@ int main(int argc, char* argv[]) {
 
     SDL_Event event;
     int done = 0, action = 0, pause = 0, n = 0;
-
-    struct context context;
 
     if (argc < 2) {
         printf("Usage: %s <filename>\n", argv[0]);
@@ -222,7 +271,7 @@ int main(int argc, char* argv[]) {
 
 
     // Create SDL graphics objects.
-    SDL_Window* window = SDL_CreateWindow(
+    window = SDL_CreateWindow(
         "Fartplayer",
         SDL_WINDOWPOS_UNDEFINED,
         SDL_WINDOWPOS_UNDEFINED,
@@ -232,6 +281,8 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "Couldn't create window: %s\n", SDL_GetError());
         quit(3);
     }
+
+    //SDL_SetWindowResizable(window, SDL_FALSE);
 
     context.renderer = SDL_CreateRenderer(window, -1, 0);
     if (!context.renderer) {
@@ -283,6 +334,12 @@ int main(int argc, char* argv[]) {
                 break;
             case SDL_KEYDOWN:
                 action = event.key.keysym.sym;
+                break;
+            case SDL_WINDOWEVENT:
+                if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
+                    SDL_Log("MESSAGE:Resizing window...\n");
+                    resizeWindow(event.window.data1, event.window.data2);
+                }
                 break;
             }
         }
